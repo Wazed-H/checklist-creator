@@ -6,7 +6,8 @@ A simple, elegant web application that converts comma-separated lists into inter
 
 - ✨ **Simple Interface** - Clean, modern UI with intuitive controls
 - 🌓 **Dark/Light Mode** - Toggle between dark and light themes
-- 💾 **Auto-Save** - Your checklist progress is automatically saved in localStorage for 12 hours
+- 🗂️ **Named Sessions** - Save multiple checklist sessions, each with its own title and items
+- 💾 **Persistent Progress** - Saved sessions keep checked/unchecked state until you manually delete them
 - 📊 **Progress Tracking** - Visual progress bar showing completion percentage
 - 📱 **Responsive Design** - Works seamlessly on desktop and mobile devices
 - 🎯 **No Dependencies** - Pure vanilla JavaScript, no frameworks or libraries needed
@@ -22,7 +23,11 @@ A simple, elegant web application that converts comma-separated lists into inter
 
 3. **Track progress** - Check off items as you complete them and watch your progress bar update
 
-4. **Reset** - Use the "Reset" button to clear everything and start fresh
+4. **Save session** - Enter a session title and click "Save Session" to keep the list and current checked state
+
+5. **Switch or delete sessions** - Use the session selector to load another saved checklist, or "Delete Session" when it is no longer needed
+
+6. **Reset current work** - Use "Reset Current" to clear the active working checklist without deleting saved sessions
 
 ## Installation
 
@@ -67,8 +72,8 @@ Works on all modern browsers that support:
 
 - All data is stored locally in your browser's localStorage
 - No data is sent to any external servers
-- Data expires after 12 hours
-- You can decline localStorage usage if preferred
+- Saved sessions persist until you manually delete them
+- You can decline localStorage usage; in that mode, data is not persisted
 
 ## License
 
@@ -85,4 +90,3 @@ Contributions, issues, and feature requests are welcome! Feel free to check the 
 ---
 
 Made with ❤️ using vanilla web technologies
-

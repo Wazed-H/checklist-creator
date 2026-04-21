@@ -111,13 +111,81 @@
             border-color: var(--accent);
         }
 
+        #sessionTitle,
+        #sessionSelect {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg);
+            color: var(--fg);
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        #sessionTitle:focus,
+        #sessionSelect:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .session-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .session-actions {
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 1fr 1fr;
+            gap: 10px;
+            align-items: stretch;
+        }
+
+        .session-actions button {
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 10px 12px;
+            transition: opacity 0.3s, transform 0.3s;
+            background: var(--accent);
+            color: white;
+        }
+
+        .session-actions button:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .session-actions button:disabled,
+        #sessionSelect:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .session-actions .btn-delete {
+            background: #c94a4a;
+        }
+
+        .status-message {
+            min-height: 20px;
+            font-size: 13px;
+            margin-bottom: 12px;
+            color: #888;
+        }
+
         .button-group {
             display: flex;
             gap: 10px;
             margin-bottom: 30px;
         }
 
-        button {
+        .button-group button {
             flex: 1;
             padding: 12px 20px;
             border: none;
@@ -274,6 +342,16 @@
         .cookie-accept:hover {
             opacity: 0.8;
         }
+
+        @media (max-width: 640px) {
+            .session-actions {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .session-actions select {
+                grid-column: 1 / -1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -289,15 +367,30 @@
                 <li>Paste your comma-separated list below</li>
                 <li>Click "Turn into Checklist"</li>
                 <li>Check off items as you complete them</li>
+                <li>Save your checklist to a named session when you want to keep it</li>
             </ol>
             <div class="warning">⚠️ Warning: Do not include commas in your list items. Each item will be split by comma.</div>
         </div>
 
         <textarea id="input" placeholder="Example: Q1, Q2, Q3, Q4, Q5"></textarea>
 
+        <div class="session-controls">
+            <input id="sessionTitle" type="text" placeholder="Session title (required to save)">
+            <div class="session-actions">
+                <select id="sessionSelect" onchange="switchSession(this.value)">
+                    <option value="">Unsaved working checklist</option>
+                </select>
+                <button id="saveSessionButton" type="button" onclick="saveSession()">Save Session</button>
+                <button type="button" onclick="newSession()">New Session</button>
+                <button id="deleteSessionButton" class="btn-delete" type="button" onclick="deleteActiveSession()">Delete Session</button>
+            </div>
+        </div>
+
+        <div class="status-message" id="statusMessage" aria-live="polite"></div>
+
         <div class="button-group">
             <button class="btn-convert" onclick="createChecklist()">Turn into Checklist</button>
-            <button class="btn-reset" onclick="resetAll()">Reset</button>
+            <button class="btn-reset" onclick="resetAll()">Reset Current</button>
         </div>
         <div id="progressContainer" style="display: none;">
                 <div class="progress-text" id="progressText"></div>
@@ -312,7 +405,7 @@
     </div>
 
     <div class="cookie-notice" id="cookieNotice">
-        <span>This site uses localStorage to save your checklist for 12 hours.</span>
+        <span>This site uses localStorage to save your sessions until you manually delete them.</span>
         <div style="display: flex; gap: 10px;">
             <button class="cookie-accept" onclick="acceptCookies()">Accept</button>
             <button class="cookie-accept" style="background: #666;" onclick="declineCookies()">Decline</button>
@@ -320,10 +413,15 @@
     </div>
 
     <script>
-        const STORAGE_KEY = 'checklist_data';
-        const EXPIRY_KEY = 'checklist_expiry';
+        const SESSIONS_KEY = 'checklist_sessions_v1';
+        const ACTIVE_SESSION_KEY = 'checklist_active_session_v1';
         const COOKIE_KEY = 'checklist_cookie_accepted';
-        const EXPIRY_HOURS = 12;
+        const LEGACY_STORAGE_KEY = 'checklist_data';
+        const LEGACY_EXPIRY_KEY = 'checklist_expiry';
+
+        let workingItems = [];
+        let workingChecked = {};
+        let activeSessionId = null;
 
         // Theme toggle
         function initTheme() {
@@ -341,7 +439,7 @@
             this.textContent = isLight ? '☀️ Light' : '🌙 Dark';
         });
 
-        // Cookie notice
+        // Storage consent
         function initCookieNotice() {
             const accepted = localStorage.getItem(COOKIE_KEY);
             const declined = localStorage.getItem(COOKIE_KEY + '_declined');
@@ -356,39 +454,260 @@
             localStorage.setItem(COOKIE_KEY, 'true');
             localStorage.removeItem(COOKIE_KEY + '_declined');
             document.getElementById('cookieNotice').classList.add('hidden');
+            migrateLegacyDataIfNeeded();
+            refreshSessionOptions(activeSessionId);
+            updateSessionControlsState();
+            loadInitialSession();
+            showStatus('Session persistence enabled.');
         }
 
         function declineCookies() {
             localStorage.setItem(COOKIE_KEY + '_declined', 'true');
             localStorage.removeItem(COOKIE_KEY);
-            localStorage.removeItem(STORAGE_KEY);
+            clearChecklistStorage();
+            setActiveSession(null);
+            refreshSessionOptions('');
+            updateSessionControlsState();
             document.getElementById('cookieNotice').classList.add('hidden');
+            showStatus('Session persistence disabled. Saved sessions were removed.', true);
         }
 
         function cookiesAccepted() {
             return localStorage.getItem(COOKIE_KEY) === 'true';
         }
 
+        // Session storage
+        function clearChecklistStorage() {
+            localStorage.removeItem(SESSIONS_KEY);
+            localStorage.removeItem(ACTIVE_SESSION_KEY);
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
+            localStorage.removeItem(LEGACY_EXPIRY_KEY);
+        }
+
+        function sanitizeItems(items) {
+            if (!Array.isArray(items)) return [];
+            return items
+                .map(item => String(item).trim())
+                .filter(item => item.length > 0);
+        }
+
+        function normalizeChecked(checked) {
+            const normalized = {};
+            if (!checked || typeof checked !== 'object') {
+                return normalized;
+            }
+
+            Object.keys(checked).forEach(key => {
+                if (checked[key]) {
+                    normalized[key] = true;
+                }
+            });
+
+            return normalized;
+        }
+
+        function loadSessions() {
+            const raw = localStorage.getItem(SESSIONS_KEY);
+            if (!raw) return [];
+
+            const sessions = JSON.parse(raw);
+            if (!Array.isArray(sessions)) return [];
+
+            return sessions
+                .filter(session => session && typeof session.id === 'string')
+                .map(session => ({
+                    ...session,
+                    title: typeof session.title === 'string' ? session.title : 'Untitled session',
+                    items: sanitizeItems(session.items),
+                    checked: normalizeChecked(session.checked)
+                }));
+        }
+
+        function saveSessions(sessions) {
+            if (!cookiesAccepted()) return;
+            localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+        }
+
+        function generateSessionId() {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                return window.crypto.randomUUID();
+            }
+
+            return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        }
+
+        function getSessionById(sessionId) {
+            if (!sessionId) return null;
+            return loadSessions().find(session => session.id === sessionId) || null;
+        }
+
+        function createSession({ title, items, checked }) {
+            const now = Date.now();
+            const sessions = loadSessions();
+            const session = {
+                id: generateSessionId(),
+                title,
+                items: sanitizeItems(items),
+                checked: normalizeChecked(checked),
+                createdAt: now,
+                updatedAt: now
+            };
+
+            sessions.push(session);
+            saveSessions(sessions);
+            return session;
+        }
+
+        function updateSession(sessionId, patch) {
+            const sessions = loadSessions();
+            const index = sessions.findIndex(session => session.id === sessionId);
+            if (index === -1) return null;
+
+            const current = sessions[index];
+            const updated = {
+                ...current,
+                ...patch,
+                items: patch.items ? sanitizeItems(patch.items) : current.items,
+                checked: patch.checked ? normalizeChecked(patch.checked) : current.checked,
+                updatedAt: Date.now()
+            };
+
+            sessions[index] = updated;
+            saveSessions(sessions);
+            return updated;
+        }
+
+        function deleteSession(sessionId) {
+            const sessions = loadSessions();
+            const filtered = sessions.filter(session => session.id !== sessionId);
+            if (filtered.length === sessions.length) return false;
+            saveSessions(filtered);
+            return true;
+        }
+
+        function setActiveSession(sessionId) {
+            activeSessionId = sessionId || null;
+
+            if (!cookiesAccepted()) return;
+
+            if (activeSessionId) {
+                localStorage.setItem(ACTIVE_SESSION_KEY, activeSessionId);
+            } else {
+                localStorage.removeItem(ACTIVE_SESSION_KEY);
+            }
+        }
+
+        function refreshSessionOptions(selectedId = '') {
+            const select = document.getElementById('sessionSelect');
+            const sessions = cookiesAccepted() ? loadSessions() : [];
+
+            select.innerHTML = '';
+
+            const unsavedOption = document.createElement('option');
+            unsavedOption.value = '';
+            unsavedOption.textContent = 'Unsaved working checklist';
+            select.appendChild(unsavedOption);
+
+            sessions.forEach(session => {
+                const option = document.createElement('option');
+                option.value = session.id;
+                option.textContent = session.title;
+                select.appendChild(option);
+            });
+
+            const hasSelected = selectedId && sessions.some(session => session.id === selectedId);
+            select.value = hasSelected ? selectedId : '';
+        }
+
+        function updateSessionControlsState() {
+            const enabled = cookiesAccepted();
+            document.getElementById('sessionSelect').disabled = !enabled;
+            document.getElementById('saveSessionButton').disabled = !enabled;
+            document.getElementById('deleteSessionButton').disabled = !enabled;
+        }
+
+        function showStatus(message, isError = false) {
+            const status = document.getElementById('statusMessage');
+            status.textContent = message;
+            status.style.color = isError ? '#ff6b6b' : '#888';
+        }
+
+        function clearStatus() {
+            showStatus('', false);
+        }
+
+        function clearRenderedChecklist() {
+            document.getElementById('output').innerHTML = '';
+            document.getElementById('progressContainer').style.display = 'none';
+            document.getElementById('progressFill').style.width = '0%';
+            document.getElementById('progressText').textContent = '';
+        }
+
+        function setWorkingChecklist(items, checked = {}) {
+            workingItems = sanitizeItems(items);
+            workingChecked = normalizeChecked(checked);
+
+            if (workingItems.length === 0) {
+                clearRenderedChecklist();
+                return;
+            }
+
+            renderChecklist(workingItems, workingChecked);
+        }
+
+        function showEmptyState(message) {
+            document.getElementById('output').innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
+            document.getElementById('progressContainer').style.display = 'none';
+        }
+
+        function getCheckedStateFromDom() {
+            const checked = {};
+            document.querySelectorAll('.checklist-item input').forEach((input, index) => {
+                if (input.checked) {
+                    checked[index] = true;
+                }
+            });
+            return checked;
+        }
+
+        function persistActiveSession() {
+            if (!activeSessionId || !cookiesAccepted()) return;
+
+            const titleInput = document.getElementById('sessionTitle').value.trim();
+            const existing = getSessionById(activeSessionId);
+            if (!existing) {
+                setActiveSession(null);
+                refreshSessionOptions('');
+                return;
+            }
+
+            updateSession(activeSessionId, {
+                title: titleInput || existing.title,
+                items: workingItems,
+                checked: workingChecked
+            });
+
+            refreshSessionOptions(activeSessionId);
+        }
+
         // Checklist logic
         function createChecklist() {
             const input = document.getElementById('input').value.trim();
             if (!input) {
-                document.getElementById('output').innerHTML = '<div class="empty-state">Please paste a comma-separated list</div>';
+                showEmptyState('Please paste a comma-separated list');
                 return;
             }
 
-            const items = input.split(',').map(item => item.trim()).filter(item => item);
+            const items = sanitizeItems(input.split(','));
             if (items.length === 0) {
-                document.getElementById('output').innerHTML = '<div class="empty-state">No items found</div>';
+                showEmptyState('No items found');
                 return;
             }
 
-            if (cookiesAccepted()) {
-                const data = { items, timestamp: Date.now() };
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-            }
-
-            renderChecklist(items, {});
+            setActiveSession(null);
+            refreshSessionOptions('');
+            setWorkingChecklist(items, {});
+            clearStatus();
         }
 
         function renderChecklist(items, checked) {
@@ -413,45 +732,174 @@
         }
 
         function updateChecked() {
-            if (!cookiesAccepted()) return;
-            const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
-            if (!data) return;
-            const checked = {};
-            document.querySelectorAll('.checklist-item input').forEach((input, index) => {
-                if (input.checked) checked[index] = true;
-            });
-            data.checked = checked;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-            updateProgress(data.items.length);
+            workingChecked = getCheckedStateFromDom();
+            updateProgress(workingItems.length);
+            persistActiveSession();
         }
 
         function updateProgress(total) {
-            const checked = document.querySelectorAll('.checklist-item input:checked').length;
-            const percent = total > 0 ? Math.round((checked / total) * 100) : 0;
+            const checkedCount = document.querySelectorAll('.checklist-item input:checked').length;
+            const percent = total > 0 ? Math.round((checkedCount / total) * 100) : 0;
             document.getElementById('progressFill').style.width = percent + '%';
-            document.getElementById('progressText').textContent = `${checked}/${total} (${percent}%)`;
+            document.getElementById('progressText').textContent = `${checkedCount}/${total} (${percent}%)`;
         }
 
-        function resetAll() {
-            document.getElementById('input').value = '';
-            document.getElementById('output').innerHTML = '';
-            document.getElementById('progressContainer').style.display = 'none';
-            localStorage.removeItem(STORAGE_KEY);
-        }
-
-        function loadChecklist() {
-            if (!cookiesAccepted()) return;
-            const data = JSON.parse(localStorage.getItem(STORAGE_KEY));
-            if (!data) return;
-
-            // Check if expired
-            const age = Date.now() - data.timestamp;
-            if (age > EXPIRY_HOURS * 60 * 60 * 1000) {
-                localStorage.removeItem(STORAGE_KEY);
+        function saveSession() {
+            if (!cookiesAccepted()) {
+                showStatus('Accept localStorage to enable saved sessions.', true);
                 return;
             }
 
-            renderChecklist(data.items, data.checked || {});
+            const title = document.getElementById('sessionTitle').value.trim();
+            if (!title) {
+                showStatus('Enter a session title before saving.', true);
+                return;
+            }
+
+            if (workingItems.length === 0) {
+                showStatus('Create a checklist before saving a session.', true);
+                return;
+            }
+
+            const existing = activeSessionId ? getSessionById(activeSessionId) : null;
+            if (existing) {
+                updateSession(activeSessionId, {
+                    title,
+                    items: workingItems,
+                    checked: workingChecked
+                });
+                showStatus('Session updated.');
+            } else {
+                const created = createSession({ title, items: workingItems, checked: workingChecked });
+                setActiveSession(created.id);
+                showStatus('Session saved.');
+            }
+
+            refreshSessionOptions(activeSessionId);
+        }
+
+        function switchSession(sessionId) {
+            if (!cookiesAccepted()) return;
+
+            if (!sessionId) {
+                setActiveSession(null);
+                refreshSessionOptions('');
+                showStatus('Working in unsaved mode.');
+                return;
+            }
+
+            const session = getSessionById(sessionId);
+            if (!session) {
+                showStatus('Session not found.', true);
+                refreshSessionOptions('');
+                return;
+            }
+
+            setActiveSession(session.id);
+            document.getElementById('sessionTitle').value = session.title;
+            document.getElementById('input').value = session.items.join(', ');
+            setWorkingChecklist(session.items, session.checked);
+            refreshSessionOptions(activeSessionId);
+            showStatus(`Loaded "${session.title}".`);
+        }
+
+        function newSession() {
+            setActiveSession(null);
+            workingItems = [];
+            workingChecked = {};
+            document.getElementById('input').value = '';
+            document.getElementById('sessionTitle').value = '';
+            clearRenderedChecklist();
+            refreshSessionOptions('');
+            clearStatus();
+        }
+
+        function deleteActiveSession() {
+            if (!cookiesAccepted()) {
+                showStatus('Accept localStorage to manage saved sessions.', true);
+                return;
+            }
+
+            if (!activeSessionId) {
+                showStatus('Select a saved session to delete.', true);
+                return;
+            }
+
+            const existing = getSessionById(activeSessionId);
+            if (!existing) {
+                setActiveSession(null);
+                refreshSessionOptions('');
+                showStatus('Session no longer exists.', true);
+                return;
+            }
+
+            const confirmed = window.confirm(`Delete "${existing.title}"? This cannot be undone.`);
+            if (!confirmed) return;
+
+            deleteSession(activeSessionId);
+            newSession();
+            showStatus('Session deleted.');
+        }
+
+        function resetAll() {
+            newSession();
+            showStatus('Current checklist cleared. Saved sessions were not deleted.');
+        }
+
+        function migrateLegacyDataIfNeeded() {
+            if (!cookiesAccepted()) return;
+
+            const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+            if (!legacyRaw) {
+                localStorage.removeItem(LEGACY_EXPIRY_KEY);
+                return;
+            }
+
+            const existingSessions = loadSessions();
+            if (existingSessions.length > 0) {
+                localStorage.removeItem(LEGACY_STORAGE_KEY);
+                localStorage.removeItem(LEGACY_EXPIRY_KEY);
+                return;
+            }
+
+            const legacyData = JSON.parse(legacyRaw);
+            const items = sanitizeItems(legacyData && legacyData.items);
+            if (items.length === 0) {
+                localStorage.removeItem(LEGACY_STORAGE_KEY);
+                localStorage.removeItem(LEGACY_EXPIRY_KEY);
+                return;
+            }
+
+            const migrated = createSession({
+                title: 'Imported checklist',
+                items,
+                checked: normalizeChecked(legacyData.checked)
+            });
+            setActiveSession(migrated.id);
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
+            localStorage.removeItem(LEGACY_EXPIRY_KEY);
+        }
+
+        function loadInitialSession() {
+            if (!cookiesAccepted()) {
+                refreshSessionOptions('');
+                updateSessionControlsState();
+                return;
+            }
+
+            migrateLegacyDataIfNeeded();
+            updateSessionControlsState();
+
+            const sessions = loadSessions();
+            if (sessions.length === 0) {
+                refreshSessionOptions('');
+                return;
+            }
+
+            const savedActive = localStorage.getItem(ACTIVE_SESSION_KEY);
+            const hasSavedActive = savedActive && sessions.some(session => session.id === savedActive);
+            const targetSessionId = hasSavedActive ? savedActive : sessions[0].id;
+            switchSession(targetSessionId);
         }
 
         function escapeHtml(text) {
@@ -463,7 +911,8 @@
         // Initialize
         initTheme();
         initCookieNotice();
-        loadChecklist();
+        updateSessionControlsState();
+        loadInitialSession();
     </script>
 </body>
 </html>
